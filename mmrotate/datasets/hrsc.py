@@ -5,53 +5,78 @@ from typing import List, Optional, Union
 
 import mmcv
 import numpy as np
+import torch
 from mmengine.dataset import BaseDataset
 from mmengine.fileio import FileClient, list_from_file
 
 from mmrotate.registry import DATASETS
+from mmrotate.structures.bbox import rbox2qbox
 
 
 @DATASETS.register_module()
-class DIORDataset(BaseDataset):
-    """DIOR dataset for detection.
+class HRSCDataset(BaseDataset):
+    """HRSC dataset for detection.
+
+    Note: There are two evaluation methods for HRSC datasets, which can be
+    chosen through ``classwise``. When ``classwise=False``, it means there
+    is only one class; When ``classwise=True``, it means there are 31
+    classes of ships.
 
     Args:
+        img_subdir (str): Subdir where images are stored.
+            Defaults to 'AllImages'.
         ann_subdir (str): Subdir where annotations are.
-            Defaults to 'Annotations/Oriented Bounding Boxes/'.
+            Defaults to 'Annotations'.
+        classwise (bool): Whether to use all 31 classes or only one class.
+            Defaults to False.
         file_client_args (dict): Arguments to instantiate a FileClient.
             See :class:`mmengine.fileio.FileClient` for details.
             Defaults to ``dict(backend='disk')``.
-        ann_type (str): Choose obb or hbb as ground truth.
-            Defaults to `obb`.
     """
 
     METAINFO = {
         'classes':
-        ('airplane', 'airport', 'baseballfield', 'basketballcourt', 'bridge',
-         'chimney', 'expressway-service-area', 'expressway-toll-station',
-         'dam', 'golffield', 'groundtrackfield', 'harbor', 'overpass', 'ship',
-         'stadium', 'storagetank', 'tenniscourt', 'trainstation', 'vehicle',
-         'windmill'),
+        ('ship', 'aircraft carrier', 'warcraft', 'merchant ship', 'Nimitz',
+         'Enterprise', 'Arleigh Burke', 'WhidbeyIsland', 'Perry', 'Sanantonio',
+         'Ticonderoga', 'Kitty Hawk', 'Kuznetsov', 'Abukuma', 'Austen',
+         'Tarawa', 'Blue Ridge', 'Container', 'OXo|--)', 'Car carrier([]==[])',
+         'Hovercraft', 'yacht', 'CntShip(_|.--.--|_]=', 'Cruise', 'submarine',
+         'lute', 'Medical', 'Car carrier(======|', 'Ford-class',
+         'Midway-class', 'Invincible-class'),
         # palette is a list of color tuples, which is used for visualization.
-        'palette': [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230),
-                    (106, 0, 228), (0, 60, 100), (0, 80, 100), (0, 0, 70),
-                    (0, 0, 192), (250, 170, 30), (100, 170, 30), (220, 220, 0),
-                    (175, 116, 175), (250, 0, 30), (165, 42, 42),
-                    (255, 77, 255), (0, 226, 252), (182, 182, 255), (0, 82, 0),
-                    (120, 166, 157)]
+        'palette':
+        [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230), (106, 0, 228),
+         (0, 60, 100), (0, 80, 100), (0, 0, 70), (0, 0, 192), (250, 170, 30),
+         (100, 170, 30), (220, 220, 0), (175, 116, 175), (250, 0, 30),
+         (165, 42, 42), (255, 77, 255), (0, 226, 252), (182, 182, 255),
+         (0, 82, 0), (120, 166, 157), (110, 76, 0), (174, 57, 255),
+         (199, 100, 0), (72, 0, 118), (255, 179, 240), (0, 125, 92),
+         (209, 0, 151), (188, 208, 182), (0, 220, 176), (255, 99, 164),
+         (92, 0, 73)],
+        # classes_id is a tuple, which is used for ``self.catid2label``
+        'classes_id':
+        ('01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11',
+         '12', '13', '14', '15', '16', '17', '18', '19', '20', '22', '24',
+         '25', '26', '27', '28', '29', '30', '31', '32', '33')
     }
 
     def __init__(self,
-                 ann_subdir: str = 'Annotations/Oriented Bounding Boxes/',
+                 img_subdir: str = 'AllImages',
+                 ann_subdir: str = 'Annotations',
+                 classwise: bool = True,
                  file_client_args: dict = dict(backend='disk'),
-                 ann_type: str = 'obb',
                  **kwargs) -> None:
-        assert ann_type in ['hbb', 'obb']
-        self.ann_type = ann_type
+        self.img_subdir = img_subdir
         self.ann_subdir = ann_subdir
+        self.classwise = classwise
         self.file_client_args = file_client_args
         self.file_client = FileClient(**self.file_client_args)
         super().__init__(**kwargs)
+
+    @property
+    def sub_data_root(self) -> str:
+        """Return the sub data root."""
+        return self.data_prefix.get('sub_data_root', '')
 
     def load_data_list(self) -> List[dict]:
         """Load annotation from XML style ann_file.
@@ -60,18 +85,24 @@ class DIORDataset(BaseDataset):
             list[dict]: Annotation info from XML file.
         """
         assert self._metainfo.get('classes', None) is not None, \
-            'classes in `DIORDataset` can not be None.'
-        self.cat2label = {
-            cat: i
-            for i, cat in enumerate(self.metainfo['classes'])
-        }
+            'classes in `HRSCDataset` can not be None.'
+        if self.classwise:
+            self.catid2label = {
+                ('1' + '0' * 6 + cls_id): i
+                for i, cls_id in enumerate(self._metainfo['classes_id'])
+            }
+        else:
+            self._metainfo['classes'] = ('ship', )
+            self._metainfo['palette'] = [
+                (220, 20, 60),
+            ]
 
         data_list = []
         img_ids = list_from_file(
             self.ann_file, file_client_args=self.file_client_args)
         for img_id in img_ids:
-            file_name = f'{img_id}.jpg'
-            xml_path = osp.join(self.data_root, self.ann_subdir,
+            file_name = osp.join(self.img_subdir, f'{img_id}.bmp')
+            xml_path = osp.join(self.sub_data_root, self.ann_subdir,
                                 f'{img_id}.xml')
 
             raw_img_info = {}
@@ -102,8 +133,7 @@ class DIORDataset(BaseDataset):
             Union[dict, List[dict]]: Parsed annotation.
         """
         data_info = {}
-        img_path = osp.join(self.data_prefix['img_path'],
-                            img_info['file_name'])
+        img_path = osp.join(self.sub_data_root, img_info['file_name'])
         data_info['img_path'] = img_path
         data_info['img_id'] = img_info['img_id']
         data_info['xml_path'] = img_info['xml_path']
@@ -114,11 +144,9 @@ class DIORDataset(BaseDataset):
             raw_ann_info = ET.parse(local_path)
         root = raw_ann_info.getroot()
 
-        size = root.find('size')
-        if size is not None:
-            width = int(size.find('width').text)
-            height = int(size.find('height').text)
-        else:
+        width = int(root.find('Img_SizeWidth').text)
+        height = int(root.find('Img_SizeWidth').text)
+        if width is None or height is None:
             img_bytes = self.file_client.get(img_path)
             img = mmcv.imfrombytes(img_bytes, backend='cv2')
             width, height = img.shape[:2]
@@ -128,44 +156,38 @@ class DIORDataset(BaseDataset):
         data_info['width'] = width
 
         instances = []
-        for obj in root.findall('object'):
+        for obj in raw_ann_info.findall('HRSC_Objects/HRSC_Object'):
             instance = {}
-            cls = obj.find('name').text.lower()
-            label = self.cat2label[cls]
-            if label is None:
-                continue
-
-            if self.ann_type == 'obb':
-                bnd_box = obj.find('robndbox')
-                polygon = np.array([
-                    float(bnd_box.find('x_left_top').text),
-                    float(bnd_box.find('y_left_top').text),
-                    float(bnd_box.find('x_right_top').text),
-                    float(bnd_box.find('y_right_top').text),
-                    float(bnd_box.find('x_right_bottom').text),
-                    float(bnd_box.find('y_right_bottom').text),
-                    float(bnd_box.find('x_left_bottom').text),
-                    float(bnd_box.find('y_left_bottom').text),
-                ]).astype(np.float32)
-            else:
-                bnd_box = obj.find('bndbox')
-                if bnd_box is None:
+            if self.classwise:
+                class_id = obj.find('Class_ID').text
+                label = self.catid2label[class_id]
+                if class_id not in self.catid2label.keys():
                     continue
-                polygon = np.array([
-                    float(bnd_box.find('xmin').text),
-                    float(bnd_box.find('ymin').text),
-                    float(bnd_box.find('xmax').text),
-                    float(bnd_box.find('ymin').text),
-                    float(bnd_box.find('xmax').text),
-                    float(bnd_box.find('ymax').text),
-                    float(bnd_box.find('xmin').text),
-                    float(bnd_box.find('ymax').text)
-                ]).astype(np.float32)
+            else:
+                label = 0
+
+            rbbox = np.array([[
+                float(obj.find('mbox_cx').text),
+                float(obj.find('mbox_cy').text),
+                float(obj.find('mbox_w').text),
+                float(obj.find('mbox_h').text),
+                float(obj.find('mbox_ang').text)
+            ]],
+                             dtype=np.float32)
+
+            polygon = rbox2qbox(torch.from_numpy(rbbox)).numpy().tolist()[0]
+
+            head = [
+                int(obj.find('header_x').text),
+                int(obj.find('header_y').text)
+            ]
 
             ignore = False
             if self.bbox_min_size is not None:
                 assert not self.test_mode
-                if width < self.bbox_min_size or height < self.bbox_min_size:
+                w = rbbox[0][2]
+                h = rbbox[0][3]
+                if w < self.bbox_min_size or h < self.bbox_min_size:
                     ignore = True
             if ignore:
                 instance['ignore_flag'] = 1
@@ -173,8 +195,8 @@ class DIORDataset(BaseDataset):
                 instance['ignore_flag'] = 0
             instance['bbox'] = polygon
             instance['bbox_label'] = label
+            instance['head'] = head
             instances.append(instance)
-
         data_info['instances'] = instances
         return data_info
 
@@ -204,7 +226,7 @@ class DIORDataset(BaseDataset):
         return valid_data_infos
 
     def get_cat_ids(self, idx: int) -> List[int]:
-        """Get DIOR category ids by index.
+        """Get COCO category ids by index.
 
         Args:
             idx (int): Index of data.
@@ -212,5 +234,6 @@ class DIORDataset(BaseDataset):
         Returns:
             List[int]: All categories in the image of specified index.
         """
+
         instances = self.get_data_info(idx)['instances']
         return [instance['bbox_label'] for instance in instances]
