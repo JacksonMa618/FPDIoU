@@ -83,9 +83,9 @@ The code of different losses are shown in mmrotate-1.x/mmrotate/models/losses
 
 
 ## Model Checkpoints
-| Task                     | Dataset | AP                                   | FPS(TRT FP16 BS1 3090) |
+| Model                    | IoU Loss |   Checkpoint                                                 |
 | ------------------------ | ------- | ------------------------------------ | ---------------------- |
-| Object Detection         | COCO    | 52.8                                 | 322                    |
+|      | COCO    | 52.8                                 | 322                    |
 | Instance Segmentation    | COCO    | 44.6                                 | 188                    |
 | Rotated Object Detection | DOTA    | 78.9(single-scale)/81.3(multi-scale) | 121                    |
 
